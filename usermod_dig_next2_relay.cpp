@@ -1,53 +1,29 @@
-/*
- * ============================================================
- *  WLED Usermod: QuinLED Dig-Next-2 — Multi-Relay + Buttons
- *  FINAL: relay logic decoupled from transient segment updates
- * ============================================================
- *
- *  Założenie:
- *  - BTN1 przełącza tylko kanał CH1
- *  - BTN2 przełącza tylko kanał CH2
- *  - Master relay jest ON gdy CH1 lub CH2 jest ON
- *  - onStateChange synchronizuje stany tylko dla zmian z app/API,
- *    ale ignoruje krótkie przejściowe zmiany po lokalnym buttonie
- *
- *  Mapowanie z configu:
- *  - Bus 0 / GPIO2   -> CH1
- *  - Bus 1 / GPIO4   -> CH2
- *  - BTN1 GPIO34
- *  - BTN2 GPIO35
- * ============================================================
- */
-
 #include "wled.h"
-
-#define DN2_RELAY_CH1_A     20
-#define DN2_RELAY_CH1_B     22
-#define DN2_RELAY_CH2       21
-#define DN2_RELAY_MASTER     5
-
-#define DN2_BTN1_PIN        34
-#define DN2_BTN2_PIN        35
-
-#define DN2_RELAY_ON      HIGH
-#define DN2_RELAY_OFF     LOW
-
-#define DN2_DEBOUNCE_MS     50
-#define DN2_BTN_ACTIVE     LOW
-
-#define DN2_BUS_CH1         0
-#define DN2_BUS_CH2         1
-#define DN2_SEGMENT_CH1_IDX 0
-#define DN2_SEGMENT_CH2_IDX 1
-
-#define DN2_LOCAL_GUARD_MS  500
+#include "pin_manager.h"
 
 #ifndef USERMOD_ID_DIG_NEXT2_RELAY
-  #define USERMOD_ID_DIG_NEXT2_RELAY 0x4E32
+  #define USERMOD_ID_DIG_NEXT2_RELAY  0x4E32
 #endif
+
+#define DN2_RELAY_ON         HIGH
+#define DN2_RELAY_OFF        LOW
+#define DN2_DEBOUNCE_MS      50
+#define DN2_BTN_ACTIVE       LOW
+#define DN2_BUS_CH1          0
+#define DN2_BUS_CH2          1
+#define DN2_SEGMENT_CH1_IDX  0
+#define DN2_SEGMENT_CH2_IDX  1
+#define DN2_LOCAL_GUARD_MS   500
 
 class DigNext2RelayUsermod : public Usermod {
 private:
+  int8_t pinRelayCh1A   = 20;
+  int8_t pinRelayCh1B   = 22;
+  int8_t pinRelayCh2    = 21;
+  int8_t pinRelayMaster = 5;
+  int8_t pinButton1     = 34;
+  int8_t pinButton2     = 35;
+
   bool ch1Active = false;
   bool ch2Active = false;
   bool masterActive = false;
@@ -63,19 +39,81 @@ private:
   bool btn2Fired = false;
 
   uint32_t lastLocalButtonMs = 0;
+  bool pinsInitialized = false;
 
-  void setRelay(uint8_t pin, bool on) {
-    digitalWrite(pin, on ? DN2_RELAY_ON : DN2_RELAY_OFF);
+  bool allocRelayCh1A = false;
+  bool allocRelayCh1B = false;
+  bool allocRelayCh2 = false;
+  bool allocRelayMaster = false;
+  bool allocButton1 = false;
+  bool allocButton2 = false;
+
+  bool isValidPin(int8_t pin) {
+    return pin >= 0;
+  }
+
+  bool allocatePinIfValid(int8_t pin, bool output, const char* owner, bool &flag) {
+    flag = false;
+    if (!isValidPin(pin)) return true;
+
+    PinOwner po = PinOwner::UM_Unspecified;
+    if (owner != nullptr) {
+      po = PinOwner::UM_Unspecified;
+    }
+
+    if (!PinManager::allocatePin(pin, output, PinOwner::UM_Unspecified)) {
+      DEBUG_PRINTF("[DN2] failed to allocate pin %d\n", pin);
+      return false;
+    }
+
+    flag = true;
+    pinMode(pin, output ? OUTPUT : INPUT);
+    return true;
+  }
+
+  void releasePinIfAllocated(int8_t pin, bool &flag, bool output) {
+    if (!flag || !isValidPin(pin)) return;
+    PinManager::deallocatePin(pin, output ? PinOwner::UM_Unspecified : PinOwner::UM_Unspecified);
+    flag = false;
+  }
+
+  void releaseAllPins() {
+    releasePinIfAllocated(pinRelayCh1A, allocRelayCh1A, true);
+    releasePinIfAllocated(pinRelayCh1B, allocRelayCh1B, true);
+    releasePinIfAllocated(pinRelayCh2, allocRelayCh2, true);
+    releasePinIfAllocated(pinRelayMaster, allocRelayMaster, true);
+    releasePinIfAllocated(pinButton1, allocButton1, false);
+    releasePinIfAllocated(pinButton2, allocButton2, false);
+    pinsInitialized = false;
+  }
+
+  bool initPins() {
+    releaseAllPins();
+
+    bool ok = true;
+    ok &= allocatePinIfValid(pinRelayCh1A, true,  "Relay CH1 A", allocRelayCh1A);
+    ok &= allocatePinIfValid(pinRelayCh1B, true,  "Relay CH1 B", allocRelayCh1B);
+    ok &= allocatePinIfValid(pinRelayCh2, true,   "Relay CH2", allocRelayCh2);
+    ok &= allocatePinIfValid(pinRelayMaster, true,"Relay Master", allocRelayMaster);
+    ok &= allocatePinIfValid(pinButton1, false,   "Button 1", allocButton1);
+    ok &= allocatePinIfValid(pinButton2, false,   "Button 2", allocButton2);
+
+    pinsInitialized = ok;
+    if (pinsInitialized) applyRelays();
+    return pinsInitialized;
+  }
+
+  void writePinIfValid(int8_t pin, bool on) {
+    if (isValidPin(pin)) digitalWrite(pin, on ? DN2_RELAY_ON : DN2_RELAY_OFF);
   }
 
   void applyRelays() {
-    setRelay(DN2_RELAY_CH1_A, ch1Active);
-    setRelay(DN2_RELAY_CH1_B, ch1Active);
-    setRelay(DN2_RELAY_CH2, ch2Active);
+    writePinIfValid(pinRelayCh1A, ch1Active);
+    writePinIfValid(pinRelayCh1B, ch1Active);
+    writePinIfValid(pinRelayCh2, ch2Active);
 
-    bool wantMaster = ch1Active || ch2Active;
-    masterActive = wantMaster;
-    setRelay(DN2_RELAY_MASTER, masterActive);
+    masterActive = ch1Active || ch2Active;
+    writePinIfValid(pinRelayMaster, masterActive);
   }
 
   bool isSegmentLit(uint8_t segIdx) {
@@ -111,7 +149,6 @@ private:
     if (segIdx >= strip.getSegmentsNum()) return;
     Segment& seg = strip.getSegment(segIdx);
     if (!seg.isActive()) return;
-
     seg.on = on;
     seg.opacity = on ? 255 : 0;
   }
@@ -133,53 +170,51 @@ private:
     applyRelays();
     stateChanged = true;
     colorUpdated(CALL_MODE_BUTTON);
-
-    DEBUG_PRINTF("[DN2] button ch=%u => CH1=%d CH2=%d MASTER=%d\n",
-      channel, ch1Active, ch2Active, masterActive);
   }
 
   void readButtons() {
     uint32_t now = millis();
 
-    bool r1 = (bool)digitalRead(DN2_BTN1_PIN);
-    if (r1 != btn1Raw) {
-      btn1Raw = r1;
-      btn1Time = now;
-    }
-    if ((now - btn1Time) > DN2_DEBOUNCE_MS && btn1Stable != btn1Raw) {
-      btn1Stable = btn1Raw;
-      if (btn1Stable == DN2_BTN_ACTIVE) btn1Fired = true;
+    if (allocButton1 && isValidPin(pinButton1)) {
+      bool r1 = (bool)digitalRead(pinButton1);
+      if (r1 != btn1Raw) {
+        btn1Raw = r1;
+        btn1Time = now;
+      }
+      if ((now - btn1Time) > DN2_DEBOUNCE_MS && btn1Stable != btn1Raw) {
+        btn1Stable = btn1Raw;
+        if (btn1Stable == DN2_BTN_ACTIVE) btn1Fired = true;
+      }
     }
 
-    bool r2 = (bool)digitalRead(DN2_BTN2_PIN);
-    if (r2 != btn2Raw) {
-      btn2Raw = r2;
-      btn2Time = now;
-    }
-    if ((now - btn2Time) > DN2_DEBOUNCE_MS && btn2Stable != btn2Raw) {
-      btn2Stable = btn2Raw;
-      if (btn2Stable == DN2_BTN_ACTIVE) btn2Fired = true;
+    if (allocButton2 && isValidPin(pinButton2)) {
+      bool r2 = (bool)digitalRead(pinButton2);
+      if (r2 != btn2Raw) {
+        btn2Raw = r2;
+        btn2Time = now;
+      }
+      if ((now - btn2Time) > DN2_DEBOUNCE_MS && btn2Stable != btn2Raw) {
+        btn2Stable = btn2Raw;
+        if (btn2Stable == DN2_BTN_ACTIVE) btn2Fired = true;
+      }
     }
   }
 
 public:
+  ~DigNext2RelayUsermod() {
+    releaseAllPins();
+  }
+
   void setup() override {
-    pinMode(DN2_RELAY_CH1_A, OUTPUT);
-    pinMode(DN2_RELAY_CH1_B, OUTPUT);
-    pinMode(DN2_RELAY_CH2, OUTPUT);
-    pinMode(DN2_RELAY_MASTER, OUTPUT);
-
-    pinMode(DN2_BTN1_PIN, INPUT);
-    pinMode(DN2_BTN2_PIN, INPUT);
-
     ch1Active = isSegmentLit(DN2_SEGMENT_CH1_IDX);
     ch2Active = isSegmentLit(DN2_SEGMENT_CH2_IDX);
-    applyRelays();
-
-    DEBUG_PRINTF("[DN2] setup CH1=%d CH2=%d MASTER=%d\n", ch1Active, ch2Active, masterActive);
+    initPins();
+    DEBUG_PRINTLN(F("[DN2] Usermod ready with PinManager"));
   }
 
   void loop() override {
+    if (!pinsInitialized) return;
+
     readButtons();
 
     if (btn1Fired) {
@@ -195,10 +230,7 @@ public:
 
   void onStateChange(uint8_t mode) override {
     uint32_t now = millis();
-    if ((now - lastLocalButtonMs) < DN2_LOCAL_GUARD_MS) {
-      DEBUG_PRINTF("[DN2] ignore transient state change mode=%u\n", mode);
-      return;
-    }
+    if ((now - lastLocalButtonMs) < DN2_LOCAL_GUARD_MS) return;
 
     bool newCh1 = isSegmentLit(DN2_SEGMENT_CH1_IDX);
     bool newCh2 = isSegmentLit(DN2_SEGMENT_CH2_IDX);
@@ -213,28 +245,58 @@ public:
     ch1Active = newCh1;
     ch2Active = newCh2;
     applyRelays();
-
-    DEBUG_PRINTF("[DN2] sync mode=%u => CH1=%d CH2=%d MASTER=%d\n",
-      mode, ch1Active, ch2Active, masterActive);
+    (void)mode;
   }
 
-  uint16_t getId() override {
-    return USERMOD_ID_DIG_NEXT2_RELAY;
+  bool readFromConfig(JsonObject& root) override {
+    JsonObject top = root[F("DigNext2Relay")];
+    if (top.isNull()) return false;
+
+    pinRelayCh1A   = top[F("relayCh1A")]   | pinRelayCh1A;
+    pinRelayCh1B   = top[F("relayCh1B")]   | pinRelayCh1B;
+    pinRelayCh2    = top[F("relayCh2")]    | pinRelayCh2;
+    pinRelayMaster = top[F("relayMaster")] | pinRelayMaster;
+    pinButton1     = top[F("button1")]     | pinButton1;
+    pinButton2     = top[F("button2")]     | pinButton2;
+
+    if (pinsInitialized) initPins();
+    return true;
+  }
+
+  void addToConfig(JsonObject& root) override {
+    JsonObject top = root.createNestedObject(F("DigNext2Relay"));
+    top[F("relayCh1A")]   = pinRelayCh1A;
+    top[F("relayCh1B")]   = pinRelayCh1B;
+    top[F("relayCh2")]    = pinRelayCh2;
+    top[F("relayMaster")] = pinRelayMaster;
+    top[F("button1")]     = pinButton1;
+    top[F("button2")]     = pinButton2;
   }
 
   void addToJsonInfo(JsonObject& root) override {
     JsonObject user = root[F("u")];
     if (user.isNull()) user = root.createNestedObject(F("u"));
-    JsonArray arr = user.createNestedArray(F("Dig-Next-2 Relay"));
+
+    JsonArray arr = user.createNestedArray(F("DigNext2Relay"));
     arr.add(ch1Active ? F("CH1 ON") : F("CH1 OFF"));
     arr.add(ch2Active ? F("CH2 ON") : F("CH2 OFF"));
-    arr.add(masterActive ? F("MST ON") : F("MST OFF"));
+    arr.add(masterActive ? F("MASTER ON") : F("MASTER OFF"));
+    arr.add(String(F("Relay CH1 A pin: ")) + pinRelayCh1A);
+    arr.add(String(F("Relay CH1 B pin: ")) + pinRelayCh1B);
+    arr.add(String(F("Relay CH2 pin: ")) + pinRelayCh2);
+    arr.add(String(F("Master pin: ")) + pinRelayMaster);
+    arr.add(String(F("Button 1 pin: ")) + pinButton1);
+    arr.add(String(F("Button 2 pin: ")) + pinButton2);
   }
 
   void addToJsonState(JsonObject& root) override {
     root[F("dn2ch1")] = ch1Active;
     root[F("dn2ch2")] = ch2Active;
     root[F("dn2master")] = masterActive;
+  }
+
+  uint16_t getId() override {
+    return USERMOD_ID_DIG_NEXT2_RELAY;
   }
 };
 
