@@ -1,0 +1,7 @@
+{
+  "name": "usermod_dig_next2_relay",
+  "build": {
+    "libArchive": false
+  },
+  "dependencies": {}
+}
