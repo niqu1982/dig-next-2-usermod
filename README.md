@@ -1,4 +1,6 @@
 ================================= EN ===============================
+Base on quinled https://quinled.info/dig-next-2/
+
 QuinLED Dig-Next-2 WLED Usermod Repository
 
 WLED usermod for QuinLED Dig-Next-2 relay control – extension for WLED v0.16.x enabling independent control of two LED lighting channels and master relay.
