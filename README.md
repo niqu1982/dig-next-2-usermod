@@ -12,6 +12,7 @@ Key Features:
 text
 
 Bus 0: GPIO2, LED 1
+
 Bus 1: GPIO4, LED 2
 
     Channel 1 (CH1): GPIO20+22 (5A1+5A2), controlled by button GPIO34
@@ -70,6 +71,8 @@ Konfiguracja sprzętowa:
 
 
 Bus 0: GPIO2, LED 1
+
+
 Bus 1: GPIO4, LED 2
 
 Instalacja:
